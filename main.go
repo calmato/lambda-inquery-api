@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/sendgrid/rest"
 	"github.com/sendgrid/sendgrid-go"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
 )
 
-type SendEmailRequest struct {
+type CreateInquiryRequest struct {
 	Name        string `json:"name,omitempty"`
 	CompanyName string `json:"companyName,omitempty"`
 	Email       string `json:"email,omitempty"`
@@ -20,12 +24,10 @@ type SendEmailRequest struct {
 	Content     string `json:"content,omitempty"`
 }
 
-type SendEmailResponse struct {
-	Code int    `json:"code,omitempty"`
-	Body string `json:"body,omitempty"`
+type CreateInquiryResponse struct {
+	Code int         `json:"code"`
+	Body interface{} `json:"body"`
 }
-
-type LambdaHandler struct{}
 
 const (
 	mailFormatWithText = `※このメールはシステムからの自動返信です
@@ -116,27 +118,72 @@ func main() {
 /**
  * お問い合わせ受付メールの送信
  */
-func lambdaHandler(ctx context.Context, req SendEmailRequest) (SendEmailResponse, error) {
-	var res SendEmailResponse
-	now := time.Now()
-
-	client := newSendgridClient()
-	message := newSendgridMessage(&req, now)
-	out, err := client.Send(message)
+func lambdaHandler(ctx context.Context, req events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+	in, err := getRequest(req.Body)
 	if err != nil {
-		return res, err
+		res := newErrorResponse(err)
+		return *res, err
 	}
 
-	res.Code = out.StatusCode
-	res.Body = out.Body
-	return res, nil
+	now := time.Now()
+	client := newSendgridClient()
+	message := newSendgridMessage(in, now)
+
+	out, err := client.Send(message)
+	if err != nil {
+		res := newErrorResponse(err)
+		return *res, err
+	}
+
+	res := newResponse(out)
+	return *res, nil
+}
+
+func getRequest(body string) (*CreateInquiryRequest, error) {
+	req := &CreateInquiryRequest{}
+	buf := []byte(body)
+
+	err := json.Unmarshal(buf, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+func newResponse(out *rest.Response) *events.APIGatewayProxyResponse {
+	b, _ := json.Marshal(out.Body)
+
+	return &events.APIGatewayProxyResponse{
+		Headers: map[string]string{
+			"Access-Control-Allow-Origin":  "*",
+			"Access-Control-Allow-Methods": "*",
+			"Access-Control-Allow-Headers": "*",
+			"Content-Type":                 "application/json",
+		},
+		StatusCode: out.StatusCode,
+		Body:       string(b),
+	}
+}
+
+func newErrorResponse(err error) *events.APIGatewayProxyResponse {
+	return &events.APIGatewayProxyResponse{
+		Headers: map[string]string{
+			"Access-Control-Allow-Origin":  "*",
+			"Access-Control-Allow-Methods": "*",
+			"Access-Control-Allow-Headers": "*",
+			"Content-Type":                 "application/json",
+		},
+		StatusCode: http.StatusInternalServerError,
+		Body:       err.Error(),
+	}
 }
 
 func newSendgridClient() *sendgrid.Client {
 	return sendgrid.NewSendClient(apiKey)
 }
 
-func newSendgridMessage(req *SendEmailRequest, now time.Time) *mail.SGMailV3 {
+func newSendgridMessage(req *CreateInquiryRequest, now time.Time) *mail.SGMailV3 {
 	// Common
 	to := mail.NewEmail(fromName, fromEmail)
 	from := mail.NewEmail(req.Name, req.Email)
@@ -161,10 +208,10 @@ func newSendgridMessage(req *SendEmailRequest, now time.Time) *mail.SGMailV3 {
 }
 
 func newSubject() string {
-	return fmt.Sprintf("[Calmato] お問い合わせありがとうございます")
+	return "[Calmato] お問い合わせありがとうございます"
 }
 
-func newContentWithText(req *SendEmailRequest, now time.Time) string {
+func newContentWithText(req *CreateInquiryRequest, now time.Time) string {
 	return fmt.Sprintf(
 		mailFormatWithText,
 		req.Name,
@@ -180,7 +227,7 @@ func newContentWithText(req *SendEmailRequest, now time.Time) string {
 	)
 }
 
-func newContentWithHTML(req *SendEmailRequest, now time.Time) string {
+func newContentWithHTML(req *CreateInquiryRequest, now time.Time) string {
 	return fmt.Sprintf(
 		mailFormatWithHTML,
 		req.Name,
