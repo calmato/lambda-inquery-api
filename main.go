@@ -185,8 +185,8 @@ func newSendgridClient() *sendgrid.Client {
 
 func newSendgridMessage(req *CreateInquiryRequest, now time.Time) *mail.SGMailV3 {
 	// Common
-	to := mail.NewEmail(fromName, fromEmail)
-	from := mail.NewEmail(req.Name, req.Email)
+	to := mail.NewEmail(fromName, req.Email)
+	from := mail.NewEmail(req.Name, fromEmail)
 	subject := newSubject()
 	contentWithText := mail.NewContent("text/plain", newContentWithText(req, now))
 	contentWithHTML := mail.NewContent("text/html", newContentWithHTML(req, now))
