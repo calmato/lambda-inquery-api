@@ -10,9 +10,11 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/calmato/lambda-inquiry-api/pkg/line"
 	"github.com/sendgrid/rest"
 	"github.com/sendgrid/sendgrid-go"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
+	"golang.org/x/sync/errgroup"
 )
 
 type CreateInquiryRequest struct {
@@ -101,6 +103,7 @@ $ url: %s`
 
 var (
 	apiKey    = ""
+	lineToken = ""
 	fromEmail = ""
 	fromName  = "Calmato 担当者"
 	homepage  = "https://www.calmato.jp"
@@ -109,6 +112,7 @@ var (
 func init() {
 	apiKey = os.Getenv("SENDGRID_API_KEY")
 	fromEmail = os.Getenv("SENDGRID_EMAIL")
+	lineToken = os.Getenv("LINE_API_TOKEN")
 }
 
 func main() {
@@ -122,21 +126,31 @@ func lambdaHandler(ctx context.Context, req events.APIGatewayProxyRequest) (even
 	in, err := getRequest(req.Body)
 	if err != nil {
 		res := newErrorResponse(err)
-		return *res, err
+		return res, err
 	}
 
 	now := time.Now()
 	client := newSendgridClient()
-	message := newSendgridMessage(in, now)
 
-	out, err := client.Send(message)
-	if err != nil {
+	eg, ectx := errgroup.WithContext(ctx)
+	var sendgridRes *rest.Response
+	eg.Go(func() (err error) {
+		message := newSendgridMessage(in, now)
+		sendgridRes, err = client.Send(message)
+		return
+	})
+	eg.Go(func() (err error) {
+		lineReq := newLINERequest(in)
+		_, err = line.SendNotify(ectx, lineToken, lineReq)
+		return
+	})
+	if err := eg.Wait(); err != nil {
 		res := newErrorResponse(err)
-		return *res, err
+		return res, err
 	}
 
-	res := newResponse(out)
-	return *res, nil
+	res := newResponse(sendgridRes)
+	return res, nil
 }
 
 func getRequest(body string) (*CreateInquiryRequest, error) {
@@ -151,10 +165,21 @@ func getRequest(body string) (*CreateInquiryRequest, error) {
 	return req, nil
 }
 
-func newResponse(out *rest.Response) *events.APIGatewayProxyResponse {
+func newLINERequest(in *CreateInquiryRequest) *line.NotifyRequest {
+	return &line.NotifyRequest{
+		Name:        in.Name,
+		CompanyName: in.CompanyName,
+		Email:       in.Email,
+		PhoneNumber: in.PhoneNumber,
+		Subject:     in.Subject,
+		Content:     in.Content,
+	}
+}
+
+func newResponse(out *rest.Response) events.APIGatewayProxyResponse {
 	b, _ := json.Marshal(out.Body)
 
-	return &events.APIGatewayProxyResponse{
+	return events.APIGatewayProxyResponse{
 		Headers: map[string]string{
 			"Access-Control-Allow-Origin":  "*",
 			"Access-Control-Allow-Methods": "*",
@@ -166,8 +191,8 @@ func newResponse(out *rest.Response) *events.APIGatewayProxyResponse {
 	}
 }
 
-func newErrorResponse(err error) *events.APIGatewayProxyResponse {
-	return &events.APIGatewayProxyResponse{
+func newErrorResponse(err error) events.APIGatewayProxyResponse {
+	return events.APIGatewayProxyResponse{
 		Headers: map[string]string{
 			"Access-Control-Allow-Origin":  "*",
 			"Access-Control-Allow-Methods": "*",
